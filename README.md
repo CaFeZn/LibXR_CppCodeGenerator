@@ -92,6 +92,44 @@ Generates platform-agnostic C++ hardware abstraction code from YAML.
 
 ---
 
+## HPM 工程工具 (HPM Project Tools)
+
+HPM 支持会同时解析 HPM Pinmux Tool 工程 `pinmux.hpmpc` 和同目录附近的
+`board.h`。前者提供 SoC、封装、时钟函数和引脚分配；后者的 `BOARD_APP_*`
+宏用于选出应用实际使用的外设，避免把板级示例中的互斥复用功能同时实例化。
+
+HPM support combines the HPM Pinmux Tool project (`pinmux.hpmpc`) with the nearby
+`board.h`. The pinmux file supplies the SoC, package, clock functions and pin
+assignments; `BOARD_APP_*` macros select the application peripherals so that
+alternative board-demo functions are not instantiated at the same time.
+When `board.h` is unavailable, discovered pinmux peripherals are exported with
+`Enabled: false`; enable the intended instances in YAML before code generation.
+
+```bash
+# 解析为 LibXR 通用 YAML / Parse to the common LibXR YAML schema
+xr_parse_hpmpc -d /path/to/hpm-project -o .config.yaml
+
+# 生成 HPM LibXR 对象和可选 HardwareContainer / Generate HPM LibXR code
+xr_gen_code_hpm -i .config.yaml -o User/app_main.cpp --hw-cntr
+
+# 一步完成解析和生成 / Run both steps
+xr_hpm_cfg -d /path/to/hpm-project --hw-cntr
+```
+
+通用命令 `xr_parse` 和 `xr_gen_code` 也会自动识别 HPM 工程。当前生成器覆盖
+GPIO、I2C、SPI、经典 CAN/MCAN、CAN FD/MCAN、PWM 和 HPM timebase。对于尚无
+LibXR HPM 后端的 UART、ADC、USB 等外设，解析结果会保留在 YAML 中并明确提示
+跳过，不会生成无法编译的代码。
+
+The generic `xr_parse` and `xr_gen_code` commands also auto-detect HPM projects.
+Peripherals without a LibXR HPM backend remain in YAML and are reported as
+skipped instead of producing uncompilable code.
+
+仅凭 pinmux 无法区分 MCAN 使用经典 CAN 还是 CAN FD。`APP_NAME` 包含 `canfd`
+时解析器选择 CAN FD，否则默认经典 CAN；可修改
+`Peripherals.MCAN.<instance>.Kind` 覆盖。总线速率、缓冲区大小和别名等运行参数
+会写入 `libxr_config.yaml`，之后可通过 `--libxr-config` 再次传入。
+
 ## STM32 工程工具 (STM32 Project Tools)
 
 ### `xr_cubemx_cfg`

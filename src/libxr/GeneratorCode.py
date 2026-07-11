@@ -5,6 +5,7 @@ import os
 import sys
 import subprocess
 import argparse
+import yaml
 from typing import List
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -16,6 +17,22 @@ def is_stm32_project(path: str) -> bool:
     except Exception as e:
         logging.error(f"Cannot check directory '{path}': {e}")
         return False
+
+
+def detect_platform(input_path: str) -> str:
+    """Prefer the explicit YAML platform and keep .ioc detection for old files."""
+    try:
+        with open(input_path, "r", encoding="utf-8") as source:
+            config = yaml.safe_load(source) or {}
+        mcu = config.get("Mcu", {}) if isinstance(config, dict) else {}
+        platform = str(mcu.get("Platform", mcu.get("Family", ""))).upper()
+        if platform == "HPM":
+            return "HPM"
+        if platform.startswith("STM32"):
+            return "STM32"
+    except (OSError, yaml.YAMLError):
+        pass
+    return "STM32" if is_stm32_project(os.path.dirname(input_path)) else ""
 
 
 def main():
@@ -31,20 +48,20 @@ def main():
     known_args, unknown_args = parser.parse_known_args()
 
     input_path = os.path.abspath(known_args.input)
-    input_dir = os.path.dirname(input_path)
-
     if not os.path.isfile(input_path):
         logging.error(f"YAML configuration file not found: {input_path}")
         sys.exit(1)
 
-    if not is_stm32_project(input_dir):
-        logging.info("Skipped: This is not an STM32 project (no .ioc file found in input file directory).")
+    platform = detect_platform(input_path)
+    if not platform:
+        logging.info("Skipped: Unsupported or unidentified project platform.")
         sys.exit(0)
 
     # Forward all original arguments (not just known) to the generator
-    cmd: List[str] = [sys.executable, "-m", "libxr.GeneratorCodeSTM32", *sys.argv[1:]]
+    module = "libxr.GeneratorCodeHPM" if platform == "HPM" else "libxr.GeneratorCodeSTM32"
+    cmd: List[str] = [sys.executable, "-m", module, *sys.argv[1:]]
 
-    logging.info("STM32 project detected (found .ioc file in input path).")
+    logging.info("%s project detected.", platform)
     logging.debug(f"CMD: {' '.join(cmd)}")
 
     try:
