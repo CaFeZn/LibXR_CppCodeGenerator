@@ -1,0 +1,80 @@
+version: 1
+project:
+  board: hpm5361evklite
+  soc: HPM5361
+  hpmpc: boards/hpm5361evklite/pinmux.hpmpc
+  pinmux_functions:
+    - init_uart3_pins
+    - init_i2c3_pins
+    - init_spi1_pins
+    - init_mcan0_pins
+spi:
+  SPI1:
+    auto_clock: true
+    clock_source: pll0_clk0
+    clock_divider: 48
+    peripheral_clock_hz: 20000000
+    prescaler: DIV_1
+    actual_sclk_hz: 20000000
+    enabled: true
+    buffer_size: 128
+    sclk_hz: 20000000
+    clock_polarity: LOW
+    clock_phase: EDGE_1
+    cs_active_low: true
+    double_buffer: false
+    use_dma: false
+    use_gpio_cs: true
+    pins:
+      CS0: STALE
+      SCLK: STALE
+i2c:
+  I2C3:
+    auto_clock: true
+    clock_source: osc24m
+    clock_divider: 1
+    peripheral_clock_hz: 24000000
+    enabled: true
+    bus_hz: 400000
+    address_mode: 7bit
+    use_dma: false
+    pins:
+      SCL: STALE
+      SDA: STALE
+uart:
+  UART3:
+    auto_clock: true
+    clock_source: osc24m
+    clock_divider: 1
+    peripheral_clock_hz: 24000000
+    enabled: true
+    baudrate: 921600
+    rx_buffer_size: 128
+    tx_buffer_size: 192
+    tx_queue_size: 7
+    parity: EVEN
+    data_bits: 7
+    stop_bits: 2
+    use_dma: true
+    rx_dma_channel: 4
+    tx_dma_channel: 5
+    pins:
+      TXD: STALE
+      RXD: STALE
+mcan:
+  MCAN0:
+    auto_clock: true
+    clock_source: pll0_clk0
+    clock_divider: 12
+    peripheral_clock_hz: 80000000
+    enabled: true
+    mode: can
+    bitrate: 500000
+    queue_size: 12
+    sample_point: 0.75
+    loopback: false
+    listen_only: false
+    one_shot: false
+    pins:
+      TXD: STALE
+      RXD: STALE

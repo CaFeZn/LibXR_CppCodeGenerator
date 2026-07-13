@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Tuple
 
 import yaml
 
-
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 DEFAULT_SETTINGS = {
@@ -98,7 +97,9 @@ def _selected_pinmux_functions(settings: Dict[str, Any]) -> List[str]:
     return [str(name) for name in configured if str(name)]
 
 
-def _matches_selected_functions(instance: str, config: Dict[str, Any], selected: set) -> bool:
+def _matches_selected_functions(
+    instance: str, config: Dict[str, Any], selected: set
+) -> bool:
     functions = config.get("PinmuxFunctions", [])
     if isinstance(functions, str):
         functions = [functions]
@@ -116,11 +117,11 @@ def _filter_project_by_pinmux_functions(
     configured_disabled = settings.get("disabled_peripherals", [])
     if isinstance(configured_disabled, str):
         configured_disabled = [configured_disabled]
-    disabled = {
-        str(instance).lower()
-        for instance in configured_disabled
-        if str(instance)
-    } if isinstance(configured_disabled, list) else set()
+    disabled = (
+        {str(instance).lower() for instance in configured_disabled if str(instance)}
+        if isinstance(configured_disabled, list)
+        else set()
+    )
     if not selected_functions and not disabled:
         return project
     selected = set(selected_functions)
@@ -134,7 +135,9 @@ def _filter_project_by_pinmux_functions(
             for instance, config in group.items()
             if isinstance(config, dict)
             and str(instance).lower() not in disabled
-            and (not selected or _matches_selected_functions(instance, config, selected))
+            and (
+                not selected or _matches_selected_functions(instance, config, selected)
+            )
         }
         if kept:
             peripherals[group_name] = kept
@@ -151,7 +154,9 @@ def _filter_project_by_pinmux_functions(
 
 def _preserve_user_block(existing: str, number: int) -> str:
     pattern = re.compile(
-        r"/\* User Code Begin {} \*/(.*?)/\* User Code End {} \*/".format(number, number),
+        r"/\* User Code Begin {} \*/(.*?)/\* User Code End {} \*/".format(
+            number, number
+        ),
         re.DOTALL,
     )
     match = pattern.search(existing)
@@ -252,7 +257,9 @@ def _generate_gpio(
             arguments += ", {}".format(irq)
         code.append("  static LibXR::HPMGPIO {}({});".format(variable, arguments))
         direction = _gpio_direction(
-            settings.get("GPIO", {}).get(name, {}).get("direction", config.get("Direction"))
+            settings.get("GPIO", {})
+            .get(name, {})
+            .get("direction", config.get("Direction"))
         )
         pull = str(settings.get("GPIO", {}).get(name, {}).get("pull", "NONE")).upper()
         if pull not in {"NONE", "UP", "DOWN"}:
@@ -289,8 +296,18 @@ def _generate_peripherals(
             parity = "NO_PARITY"
         data_bits = int(cfg.setdefault("data_bits", 8))
         stop_bits = int(cfg.setdefault("stop_bits", 1))
-        rx_dma_channel = uart_index * 2
-        tx_dma_channel = rx_dma_channel + 1
+        default_rx_dma_channel = uart_index * 2
+        default_tx_dma_channel = default_rx_dma_channel + 1
+        rx_dma_channel = int(
+            default_rx_dma_channel
+            if cfg.get("rx_dma_channel") is None
+            else cfg["rx_dma_channel"]
+        )
+        tx_dma_channel = int(
+            default_tx_dma_channel
+            if cfg.get("tx_dma_channel") is None
+            else cfg["tx_dma_channel"]
+        )
         uart_index += 1
         resources.extend(
             [
@@ -334,16 +351,20 @@ def _generate_peripherals(
         bus_hz = int(cfg.setdefault("bus_hz", 100000))
         code.append(
             "  static LibXR::HPMI2C {}({}, {}, true, {{{}U}});".format(
-                variable, config.get("Base", "HPM_" + instance),
-                config.get("Clock", "clock_" + variable), bus_hz
+                variable,
+                config.get("Base", "HPM_" + instance),
+                config.get("Clock", "clock_" + variable),
+                bus_hz,
             )
         )
         address_mode = str(cfg.setdefault("address_mode", "7bit")).lower()
         if address_mode == "10bit":
             code.append(
-                "  ASSERT({}.SetAddressMode(LibXR::HPMI2C::AddressMode::ADDR_10BIT) == LibXR::ErrorCode::OK);".format(
-                    variable
-                )
+                (
+                    "  ASSERT({}.SetAddressMode("
+                    "LibXR::HPMI2C::AddressMode::ADDR_10BIT) "
+                    "== LibXR::ErrorCode::OK);"
+                ).format(variable)
             )
         devices.append((variable, "I2C", _aliases(variable, settings)))
 
@@ -378,12 +399,10 @@ def _generate_peripherals(
                 cfg.get("peripheral_clock_hz"), cfg.get("sclk_hz")
             )
         double_buffer = "true" if cfg.get("double_buffer", False) else "false"
-        configuration = "      {{LibXR::SPI::ClockPolarity::{}, LibXR::SPI::ClockPhase::{}, LibXR::SPI::Prescaler::{}, {}}}".format(
-            clock_polarity,
-            clock_phase,
-            prescaler,
-            double_buffer,
-        )
+        configuration = (
+            "      {{LibXR::SPI::ClockPolarity::{}, "
+            "LibXR::SPI::ClockPhase::{}, LibXR::SPI::Prescaler::{}, {}}}"
+        ).format(clock_polarity, clock_phase, prescaler, double_buffer)
         if use_gpio_cs:
             configuration += (
                 ",\n      +[](bool selected) { board_write_spi_cs(BOARD_SPI_CS_PIN, "
@@ -396,7 +415,9 @@ def _generate_peripherals(
                     config.get("Base", "HPM_" + instance),
                     config.get("Clock", "clock_" + variable),
                 ),
-                "      LibXR::RawData({0}_rx_buffer, sizeof({0}_rx_buffer)),".format(variable),
+                "      LibXR::RawData({0}_rx_buffer, sizeof({0}_rx_buffer)),".format(
+                    variable
+                ),
                 "      LibXR::RawData({0}_tx_buffer, sizeof({0}_tx_buffer)), {1},".format(
                     variable, auto_board_init
                 ),
@@ -447,7 +468,9 @@ def _generate_peripherals(
         bitrate = int(cfg.setdefault("bitrate", 500000))
         code.extend(
             [
-                "  LibXR::{}::Configuration {}_config{{}};".format(config_type, variable),
+                "  LibXR::{}::Configuration {}_config{{}};".format(
+                    config_type, variable
+                ),
                 "  {0}_config.bitrate = {1}U;".format(variable, bitrate),
             ]
         )
@@ -471,12 +494,16 @@ def _generate_peripherals(
             )
         elif "sample_point" in cfg:
             sample_point = float(cfg["sample_point"])
-            code.append("  {0}_config.sample_point = {1}f;".format(variable, sample_point))
+            code.append(
+                "  {0}_config.sample_point = {1}f;".format(variable, sample_point)
+            )
         for field in ("loopback", "listen_only", "one_shot"):
             if cfg.get(field, False):
                 code.append("  {0}_config.mode.{1} = true;".format(variable, field))
         code.append(
-            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(variable)
+            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(
+                variable
+            )
         )
         devices.append((variable, interface, _aliases(variable, settings)))
 
@@ -513,12 +540,16 @@ def _generate_peripherals(
         )
         if "sample_point" in cfg:
             sample_point = float(cfg["sample_point"])
-            code.append("  {0}_config.sample_point = {1}f;".format(variable, sample_point))
+            code.append(
+                "  {0}_config.sample_point = {1}f;".format(variable, sample_point)
+            )
         for field in ("loopback", "listen_only", "one_shot"):
             if cfg.get(field, False):
                 code.append("  {0}_config.mode.{1} = true;".format(variable, field))
         code.append(
-            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(variable)
+            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(
+                variable
+            )
         )
         devices.append((variable, "CAN", _aliases(variable, settings)))
 
@@ -547,7 +578,9 @@ def _generate_peripherals(
 
     supported = {"UART", "I2C", "SPI", "MCAN", "CAN", "PWM"}
     for peripheral_type, instances in peripherals.items():
-        active = any(config.get("Enabled") is not False for config in instances.values())
+        active = any(
+            config.get("Enabled") is not False for config in instances.values()
+        )
         if peripheral_type not in supported and active:
             unsupported.append(peripheral_type)
     if unsupported:
@@ -564,9 +597,13 @@ def _hardware_container(devices: List[Tuple[str, str, List[str]]]) -> List[str]:
     lines = ["  static LibXR::HardwareContainer peripherals("]
     entries = []
     for variable, interface, aliases in devices:
-        alias_text = ", ".join('"{}"'.format(alias.replace('"', '\\"')) for alias in aliases)
+        alias_text = ", ".join(
+            '"{}"'.format(alias.replace('"', '\\"')) for alias in aliases
+        )
         entries.append(
-            "      LibXR::Entry<LibXR::{}>{{{}, {{{}}}}}".format(interface, variable, alias_text)
+            "      LibXR::Entry<LibXR::{}>{{{}, {{{}}}}}".format(
+                interface, variable, alias_text
+            )
         )
     lines.append(",\n".join(entries) + ");")
     return lines
@@ -667,7 +704,9 @@ def generate_code(
     elif use_xrobot:
         lines.append("  XRobotMain(peripherals);")
     else:
-        lines.extend(["  while (true)", "  {", "    LibXR::Thread::Sleep(UINT32_MAX);", "  }"])
+        lines.extend(
+            ["  while (true)", "  {", "    LibXR::Thread::Sleep(UINT32_MAX);", "  }"]
+        )
     lines.extend(["  /* User Code End 3 */", "}", ""])
     return "\n".join(lines)
 
@@ -705,9 +744,13 @@ def write_outputs(
         with open(output, "r", encoding="utf-8") as source:
             existing = source.read()
     with open(output, "w", encoding="utf-8") as target:
-        target.write(generate_code(project, settings, use_xrobot, use_hw_cntr, existing))
+        target.write(
+            generate_code(project, settings, use_xrobot, use_hw_cntr, existing)
+        )
     generate_header(output_dir)
-    with open(os.path.join(output_dir, "libxr_config.yaml"), "w", encoding="utf-8") as target:
+    with open(
+        os.path.join(output_dir, "libxr_config.yaml"), "w", encoding="utf-8"
+    ) as target:
         yaml.safe_dump(settings, target, allow_unicode=True, sort_keys=False)
 
 
@@ -715,16 +758,24 @@ def main() -> None:
     from libxr.PackageInfo import LibXRPackageInfo
 
     LibXRPackageInfo.check_and_print()
-    parser = argparse.ArgumentParser(description="Generate LibXR code for an HPM project")
+    parser = argparse.ArgumentParser(
+        description="Generate LibXR code for an HPM project"
+    )
     parser.add_argument("-i", "--input", required=True, help="Parsed HPM YAML")
     parser.add_argument("-o", "--output", required=True, help="Output app_main.cpp")
-    parser.add_argument("--xrobot", action="store_true", help="Generate XRobot integration")
-    parser.add_argument("--hw-cntr", action="store_true", help="Generate HardwareContainer")
+    parser.add_argument(
+        "--xrobot", action="store_true", help="Generate XRobot integration"
+    )
+    parser.add_argument(
+        "--hw-cntr", action="store_true", help="Generate HardwareContainer"
+    )
     parser.add_argument("--libxr-config", default="", help="LibXR settings YAML")
     args = parser.parse_args()
     try:
         project = load_configuration(args.input)
-        write_outputs(project, args.output, args.libxr_config, args.xrobot, args.hw_cntr)
+        write_outputs(
+            project, args.output, args.libxr_config, args.xrobot, args.hw_cntr
+        )
     except (OSError, ValueError, yaml.YAMLError) as error:
         logging.error("HPM code generation failed: %s", error)
         sys.exit(1)

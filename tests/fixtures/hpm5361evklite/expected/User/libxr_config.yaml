@@ -1,0 +1,64 @@
+SYSTEM: None
+pinmux_functions:
+- init_uart3_pins
+- init_i2c3_pins
+- init_spi1_pins
+- init_mcan0_pins
+disabled_peripherals:
+- external0
+SPI:
+  spi1:
+    custom_option: 7
+    old_managed_value: remove-me
+    buffer_size: 128
+    sclk_hz: 20000000
+    spi_mode: 0
+    prescaler: DIV_1
+    actual_sclk_hz: 20000000
+    use_gpio_cs: true
+    clock_polarity: LOW
+    clock_phase: EDGE_1
+    cs_active_low: true
+    double_buffer: false
+I2C:
+  i2c3:
+    custom_option: keep-i2c
+    bus_hz: 400000
+    address_mode: 7bit
+    peripheral_clock_hz: 24000000
+UART:
+  uart3:
+    custom_option: keep-uart
+    baudrate: 921600
+    rx_buffer_size: 128
+    tx_buffer_size: 192
+    tx_queue_size: 7
+    parity: EVEN
+    data_bits: 7
+    stop_bits: 2
+    peripheral_clock_hz: 24000000
+    rx_dma_channel: 4
+    tx_dma_channel: 5
+CAN:
+  mcan0:
+    custom_option: keep-can
+    bitrate: 500000
+    peripheral_clock_hz: 80000000
+    loopback: false
+    listen_only: false
+    one_shot: false
+    queue_size: 12
+    index: 0
+    sample_point: 0.75
+FDCAN: {}
+PWM:
+  user_pwm:
+    frequency_hz: 20000
+GPIO:
+  user_led:
+    direction: OUTPUT_PUSH_PULL
+device_aliases:
+  uart3:
+  - console
+custom_section:
+  keep: true

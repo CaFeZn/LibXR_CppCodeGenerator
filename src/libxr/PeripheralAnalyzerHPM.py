@@ -2,16 +2,16 @@
 """Parse HPM Pinmux Tool projects into LibXR's common YAML schema."""
 
 import argparse
-import json
 import logging
 import os
 import re
 import sys
-from collections import defaultdict
 from typing import Any, Dict, Iterable, Optional
 
 import yaml
 
+from libxr.platforms.hpm.hpmpc import parse_hpmpc
+from libxr.platforms.hpm.project import find_hpmpc_files as discover_hpmpc_files
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -83,32 +83,6 @@ def _parse_app_name(cmake_path: Optional[str]) -> str:
     return match.group(1) if match else ""
 
 
-def _signal_role(signal: str) -> str:
-    role = signal.rsplit(".", 1)[-1]
-    return re.sub(r"\[(\d+)\]", r"\1", role)
-
-
-def _collect_pinmux(functions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    peripherals = defaultdict(lambda: {"Pins": {}, "PinmuxFunctions": []})
-    for function_name, function in functions.items():
-        selected = function.get("selectPins", {}) if isinstance(function, dict) else {}
-        annotation = function.get("annotation", "") if isinstance(function, dict) else ""
-        for pad, pin_data in selected.items():
-            signal = pin_data.get("signal", "") if isinstance(pin_data, dict) else ""
-            instance = signal.split(".", 1)[0]
-            if not _INSTANCE_RE.match(instance):
-                continue
-            entry = peripherals[instance]
-            entry["Pins"][_signal_role(signal)] = pad
-            if function_name not in entry["PinmuxFunctions"]:
-                entry["PinmuxFunctions"].append(function_name)
-            if annotation:
-                entry.setdefault("Annotations", [])
-                if annotation not in entry["Annotations"]:
-                    entry["Annotations"].append(annotation)
-    return dict(peripherals)
-
-
 def _macro_if_present(defines: Dict[str, str], name: str) -> Optional[str]:
     return name if name in defines else None
 
@@ -132,7 +106,10 @@ def _add_app_peripherals(
         instance = _instance_from_base(base_macro, defines)
         if not instance:
             continue
-        instance_type = _INSTANCE_RE.match(instance).group(1)
+        instance_match = _INSTANCE_RE.match(instance)
+        if instance_match is None:
+            continue
+        instance_type = instance_match.group(1)
         output_type = "ADC" if instance_type == "ADC" else instance_type
         config = dict(discovered.get(instance, {}))
         config["Base"] = base_macro
@@ -163,11 +140,17 @@ def _mcan_kind(instance_config: Dict[str, Any], app_name: str) -> str:
     hints.extend(str(value) for value in instance_config.get("PinmuxFunctions", []))
     hints.extend(str(value) for value in instance_config.get("Annotations", []))
     text = " ".join(hints).lower()
-    return "FDCAN" if any(marker in text for marker in ("canfd", "fdcan", "can fd")) else "CAN"
+    return (
+        "FDCAN"
+        if any(marker in text for marker in ("canfd", "fdcan", "can fd"))
+        else "CAN"
+    )
 
 
 def _add_discovered_mcan(
-    output: Dict[str, Dict[str, Any]], discovered: Dict[str, Dict[str, Any]], app_name: str
+    output: Dict[str, Dict[str, Any]],
+    discovered: Dict[str, Dict[str, Any]],
+    app_name: str,
 ) -> None:
     for instance, discovered_config in discovered.items():
         if not instance.startswith("MCAN"):
@@ -204,7 +187,10 @@ def _add_discovered_communication(
 
 
 def _add_gpio(
-    gpio: Dict[str, Dict[str, Any]], defines: Dict[str, str], prefix: str, direction: str
+    gpio: Dict[str, Dict[str, Any]],
+    defines: Dict[str, str],
+    prefix: str,
+    direction: str,
 ) -> None:
     controller = prefix + "_GPIO_CTRL"
     index = prefix + "_GPIO_INDEX"
@@ -263,23 +249,22 @@ def parse_hpmpc_file(
     cmake_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse one .hpmpc file without copying credential fields into the result."""
-    with open(hpmpc_path, "r", encoding="utf-8-sig") as source:
-        root = json.load(source)
-    content = root.get("content")
-    if not isinstance(content, dict):
-        raise ValueError("Invalid HPM configuration: missing content object")
-
-    info = content.get("info", {})
-    functions = content.get("pinmux", {}).get("functions", {})
-    if not isinstance(functions, dict):
-        raise ValueError("Invalid HPM configuration: pinmux.functions must be an object")
+    parsed = parse_hpmpc(hpmpc_path)
 
     if board_header is None:
         board_header = _find_nearby(hpmpc_path, "board.h")
     if cmake_path is None:
         cmake_path = _find_project_cmake(hpmpc_path)
     defines = _read_defines(board_header)
-    discovered = _collect_pinmux(functions)
+    discovered: Dict[str, Dict[str, Any]] = {}
+    for peripheral in parsed.peripherals:
+        config: Dict[str, Any] = {
+            "Pins": dict(peripheral.pins),
+            "PinmuxFunctions": list(peripheral.functions),
+        }
+        if peripheral.annotations:
+            config["Annotations"] = list(peripheral.annotations)
+        discovered[peripheral.instance] = config
     app_name = _parse_app_name(cmake_path)
 
     peripherals: Dict[str, Dict[str, Any]] = {}
@@ -289,7 +274,10 @@ def parse_hpmpc_file(
         _add_discovered_communication(peripherals, discovered)
     else:
         for instance, config in discovered.items():
-            peripheral_type = _INSTANCE_RE.match(instance).group(1)
+            instance_match = _INSTANCE_RE.match(instance)
+            if instance_match is None:
+                continue
+            peripheral_type = instance_match.group(1)
             inactive_config = dict(config)
             inactive_config["Enabled"] = False
             peripherals.setdefault(peripheral_type, {})[instance] = inactive_config
@@ -299,40 +287,28 @@ def parse_hpmpc_file(
     _add_gpio(gpio, defines, "BOARD_SPI_CS", "OUTPUT_PUSH_PULL")
     _add_pwm(peripherals, defines)
 
-    clock_functions = content.get("clock", {}).get("functions", {})
     return {
         "Mcu": {
             "Platform": "HPM",
             "Family": "HPM",
-            "Type": info.get("socName", "Unknown"),
-            "Package": info.get("packageName", "Unknown"),
-            "SDK": info.get("sdkName", "Unknown"),
+            "Type": parsed.soc_name,
+            "Package": parsed.package_name,
+            "SDK": parsed.sdk_name,
         },
         "GPIO": gpio,
         "Peripherals": peripherals,
         "HPM": {
             "ConfigFile": os.path.basename(hpmpc_path),
-            "ProjectName": info.get("projectName", ""),
+            "ProjectName": parsed.project_name,
             "BoardHeader": os.path.basename(board_header) if board_header else None,
-            "PinmuxFunctions": list(functions.keys()),
-            "ClockFunctions": list(clock_functions.keys())
-            if isinstance(clock_functions, dict)
-            else [],
+            "PinmuxFunctions": list(parsed.pinmux_functions),
+            "ClockFunctions": list(parsed.clock_functions),
         },
     }
 
 
 def find_hpmpc_files(directory: str) -> Iterable[str]:
-    for root, dirs, files in os.walk(directory):
-        dirs[:] = [
-            name
-            for name in dirs
-            if name not in {".git", "LibXR"}
-            and not name.lower().startswith(("build", "hpm_sdk"))
-        ]
-        for filename in files:
-            if filename.endswith(".hpmpc"):
-                yield os.path.join(root, filename)
+    yield from discover_hpmpc_files(directory)
 
 
 def save_to_yaml(data: Dict[str, Any], output_path: str) -> None:
@@ -345,7 +321,9 @@ def main() -> None:
 
     LibXRPackageInfo.check_and_print()
     parser = argparse.ArgumentParser(description="Parse an HPM Pinmux Tool project")
-    parser.add_argument("-d", "--directory", required=True, help="HPM project directory")
+    parser.add_argument(
+        "-d", "--directory", required=True, help="HPM project directory"
+    )
     parser.add_argument("-i", "--input", help="Explicit .hpmpc file")
     parser.add_argument("-o", "--output", help="Output YAML path")
     parser.add_argument("--board-header", help="Explicit board.h path")
@@ -367,12 +345,14 @@ def main() -> None:
         data = parse_hpmpc_file(hpmpc_path, args.board_header)
         output = args.output or os.path.splitext(hpmpc_path)[0] + ".yaml"
         save_to_yaml(data, output)
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, ValueError) as error:
         logging.error("HPM configuration parsing failed: %s", error)
         sys.exit(1)
 
     count = sum(len(group) for group in data["Peripherals"].values())
-    logging.info("Parsed %s: %d GPIO(s), %d peripheral(s)", hpmpc_path, len(data["GPIO"]), count)
+    logging.info(
+        "Parsed %s: %d GPIO(s), %d peripheral(s)", hpmpc_path, len(data["GPIO"]), count
+    )
     logging.info("Configuration exported to: %s", output)
 
 

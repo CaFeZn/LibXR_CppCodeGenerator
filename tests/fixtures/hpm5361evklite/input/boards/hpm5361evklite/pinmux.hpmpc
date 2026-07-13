@@ -1,0 +1,49 @@
+{
+  "content": {
+    "info": {
+      "projectName": "hpm5361evklite_golden",
+      "sdkName": "1.11.0",
+      "socName": "HPM5361",
+      "packageName": "BGA289"
+    },
+    "pinmux": {
+      "functions": {
+        "init_uart3_pins": {
+          "annotation": "console",
+          "selectPins": {
+            "PB15": { "signal": "UART3.A.TXD" },
+            "PB14": { "signal": "UART3.A.RXD" }
+          }
+        },
+        "init_i2c3_pins": {
+          "annotation": "sensor bus",
+          "selectPins": {
+            "PB13": { "signal": "I2C3.C.SCL" },
+            "PB12": { "signal": "I2C3.C.SDA" }
+          }
+        },
+        "init_spi1_pins": {
+          "annotation": "SPI flash",
+          "selectPins": {
+            "PA26": { "signal": "SPI1.A.CS[0]" },
+            "PA27": { "signal": "SPI1.A.SCLK" },
+            "PA28": { "signal": "SPI1.A.MISO" },
+            "PA29": { "signal": "SPI1.A.MOSI" }
+          }
+        },
+        "init_mcan0_pins": {
+          "annotation": "classic CAN",
+          "selectPins": {
+            "PA00": { "signal": "MCAN0.A.TXD" },
+            "PA01": { "signal": "MCAN0.A.RXD" }
+          }
+        }
+      }
+    },
+    "clock": {
+      "functions": {
+        "init_clocks": {}
+      }
+    }
+  }
+}

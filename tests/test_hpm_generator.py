@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from libxr.GeneratorCode import detect_platform
-from libxr.GeneratorCodeHPM import generate_code, load_settings
+from libxr.GeneratorCodeHPM import generate_code, load_settings, write_outputs
 from libxr.PeripheralAnalyzerHPM import parse_hpmpc_file
 
 
@@ -100,7 +100,9 @@ class HPMGeneratorTest(unittest.TestCase):
         self.assertEqual(project["Mcu"]["Type"], "HPM5361")
         self.assertEqual(project["Peripherals"]["I2C"]["I2C3"]["Pins"]["SCL"], "PB13")
         self.assertEqual(project["Peripherals"]["I2C"]["I2C2"]["Base"], "HPM_I2C2")
-        self.assertEqual(project["Peripherals"]["UART"]["UART3"]["IRQ"], "BOARD_APP_UART_IRQ")
+        self.assertEqual(
+            project["Peripherals"]["UART"]["UART3"]["IRQ"], "BOARD_APP_UART_IRQ"
+        )
         self.assertEqual(project["Peripherals"]["MCAN"]["MCAN0"]["Base"], "HPM_MCAN0")
         self.assertEqual(project["Peripherals"]["MCAN"]["MCAN0"]["IRQ"], "IRQn_MCAN0")
         self.assertEqual(project["Peripherals"]["MCAN"]["MCAN2"]["Kind"], "FDCAN")
@@ -127,7 +129,9 @@ class HPMGeneratorTest(unittest.TestCase):
         self.assertIn("LibXR::HPMCANFD mcan0", code)
         self.assertIn("LibXR::HPMCANFD mcan2", code)
         self.assertIn("board_init_can(BOARD_APP_CAN_BASE);", code)
-        self.assertIn("ASSERT(mcan2.SetConfig(mcan2_config) == LibXR::ErrorCode::OK);", code)
+        self.assertIn(
+            "ASSERT(mcan2.SetConfig(mcan2_config) == LibXR::ErrorCode::OK);", code
+        )
         self.assertIn("LibXR::Entry<LibXR::FDCAN>{mcan2", code)
         self.assertIn("LibXR::HPMGPIO spi_cs", code)
         self.assertIn('#include "hpm_mcan.hpp"', code)
@@ -189,6 +193,46 @@ class HPMGeneratorTest(unittest.TestCase):
         self.assertIn("uart3_tx_dma_buffer[384]", code)
         self.assertIn("LibXR::UART::Parity::EVEN, 7U, 2U", code)
         self.assertIn("0, 1, 7", code)
+
+    def test_uart_settings_honor_explicit_dma_channels(self):
+        project = parse_hpmpc_file(str(self.hpmpc))
+        settings = load_settings("")
+        settings["pinmux_functions"] = ["init_uart3_pins"]
+        settings["UART"]["uart3"] = {
+            "rx_dma_channel": 6,
+            "tx_dma_channel": 9,
+        }
+        code = generate_code(project, settings)
+
+        self.assertIn("6, 9, 5", code)
+
+    def test_uart_null_dma_channels_use_defaults_in_legacy_writer(self):
+        project = parse_hpmpc_file(str(self.hpmpc))
+        root = Path(self.temp_dir.name)
+        settings_path = root / "libxr_config.yaml"
+        settings_path.write_text(
+            "pinmux_functions:\n"
+            "- init_uart3_pins\n"
+            "UART:\n"
+            "  uart3:\n"
+            "    rx_dma_channel: null\n"
+            "    tx_dma_channel: null\n",
+            encoding="utf-8",
+        )
+        output = root / "User" / "app_main.cpp"
+        output.parent.mkdir()
+        output.write_text(
+            "  /* User Code Begin 2 */\n"
+            "  KeepLegacyUserCode();\n"
+            "  /* User Code End 2 */\n",
+            encoding="utf-8",
+        )
+
+        write_outputs(project, str(output), str(settings_path))
+
+        code = output.read_text(encoding="utf-8")
+        self.assertIn("0, 1, 5", code)
+        self.assertIn("KeepLegacyUserCode();", code)
 
     def test_spi_settings_emit_libxr_spi_configuration(self):
         project = parse_hpmpc_file(str(self.hpmpc))
@@ -256,7 +300,11 @@ class HPMGeneratorTest(unittest.TestCase):
         project = parse_hpmpc_file(str(self.hpmpc))
         settings = load_settings("")
         settings["pinmux_functions"] = ["init_mcan0_pins"]
-        settings["CAN"]["mcan0"] = {"bitrate": 250000, "sample_point": 0.8, "queue_size": 12}
+        settings["CAN"]["mcan0"] = {
+            "bitrate": 250000,
+            "sample_point": 0.8,
+            "queue_size": 12,
+        }
         code = generate_code(project, settings)
 
         self.assertIn("LibXR::HPMCAN mcan0", code)

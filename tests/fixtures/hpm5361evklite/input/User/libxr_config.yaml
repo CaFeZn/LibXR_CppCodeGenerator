@@ -1,0 +1,30 @@
+SYSTEM: None
+pinmux_functions:
+  - obsolete_function
+disabled_peripherals:
+  - external0
+SPI:
+  spi1:
+    custom_option: 7
+    old_managed_value: remove-me
+I2C:
+  i2c3:
+    custom_option: keep-i2c
+UART:
+  uart3:
+    custom_option: keep-uart
+CAN:
+  mcan0:
+    custom_option: keep-can
+FDCAN: {}
+PWM:
+  user_pwm:
+    frequency_hz: 20000
+GPIO:
+  user_led:
+    direction: OUTPUT_PUSH_PULL
+device_aliases:
+  uart3:
+    - console
+custom_section:
+  keep: true

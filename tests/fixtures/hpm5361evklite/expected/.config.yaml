@@ -1,0 +1,77 @@
+Mcu:
+  Platform: HPM
+  Family: HPM
+  Type: HPM5361
+  Package: BGA289
+  SDK: 1.11.0
+GPIO:
+  spi_cs:
+    Controller: BOARD_SPI_CS_GPIO_CTRL
+    Port: GPIO_GET_PORT_INDEX(BOARD_SPI_CS_PIN)
+    Pin: GPIO_GET_PIN_INDEX(BOARD_SPI_CS_PIN)
+    Direction: OUTPUT_PUSH_PULL
+    Pad: PA26
+Peripherals:
+  UART:
+    UART3:
+      Pins:
+        TXD: PB15
+        RXD: PB14
+      PinmuxFunctions:
+      - init_uart3_pins
+      Annotations:
+      - console
+      Base: BOARD_APP_UART_BASE
+      Clock: BOARD_APP_UART_CLK_NAME
+      IRQ: BOARD_APP_UART_IRQ
+  I2C:
+    I2C3:
+      Pins:
+        SCL: PB13
+        SDA: PB12
+      PinmuxFunctions:
+      - init_i2c3_pins
+      Annotations:
+      - sensor bus
+      Base: BOARD_APP_I2C_BASE
+      Clock: BOARD_APP_I2C_CLK_NAME
+      IRQ: BOARD_APP_I2C_IRQ
+  SPI:
+    SPI1:
+      Pins:
+        CS0: PA26
+        SCLK: PA27
+        MISO: PA28
+        MOSI: PA29
+      PinmuxFunctions:
+      - init_spi1_pins
+      Annotations:
+      - SPI flash
+      Base: BOARD_APP_SPI_BASE
+      Clock: BOARD_APP_SPI_CLK_NAME
+      IRQ: BOARD_APP_SPI_IRQ
+      UseGpioCs: true
+  MCAN:
+    MCAN0:
+      Pins:
+        TXD: PA00
+        RXD: PA01
+      PinmuxFunctions:
+      - init_mcan0_pins
+      Annotations:
+      - classic CAN
+      Base: HPM_MCAN0
+      Clock: clock_can0
+      IRQ: IRQn_MCAN0
+      Kind: CAN
+HPM:
+  ConfigFile: pinmux.hpmpc
+  ProjectName: hpm5361evklite_golden
+  BoardHeader: board.h
+  PinmuxFunctions:
+  - init_uart3_pins
+  - init_i2c3_pins
+  - init_spi1_pins
+  - init_mcan0_pins
+  ClockFunctions:
+  - init_clocks

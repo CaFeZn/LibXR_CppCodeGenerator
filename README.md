@@ -9,17 +9,17 @@
 [![CI/CD - Python Package](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2FLibXR_CppCodeGenerator?ref=badge_shield)
 
-`libxr` 是一个 Python 包，用于自动化嵌入式系统开发。它通过解析硬件配置文件并生成对应的 C++ 工程代码，显著降低嵌入式开发中的重复性工作。目前默认支持 STM32 平台，后续将扩展至更多硬件体系结构。
+`libxr` 是一个 Python 包，用于自动化嵌入式系统开发。它通过解析硬件配置文件并生成对应的 C++ 工程代码，显著降低嵌入式开发中的重复性工作。目前支持 STM32 和 HPM 平台。
 
-`libxr` is a Python package for automating embedded system development. It parses hardware configuration files and generates corresponding C++ project code, significantly reducing repetitive manual work. STM32 is supported by default, with more hardware architectures planned.
+`libxr` is a Python package for automating embedded system development. It parses hardware configuration files and generates corresponding C++ project code, significantly reducing repetitive manual work. STM32 and HPM platforms are supported.
 
 ## 🌟 Features 功能亮点
 
 - 🧠 自动生成设备驱动和应用程序框架。
   Automatically generates device drivers and application scaffolding.
 
-- ⚙️ 支持多种后端架构，默认支持 STM32 平台。
-  Supports multiple backends; STM32 is the default.
+- ⚙️ 支持 STM32 和 HPM 后端架构。
+  Supports STM32 and HPM backends.
 
 - 🔌 支持多重别名注册与查找。
   Supports multi-alias registration and lookup.
@@ -94,48 +94,123 @@ Generates platform-agnostic C++ hardware abstraction code from YAML.
 
 ## HPM 工程工具 (HPM Project Tools)
 
-HPM 支持会同时解析 HPM Pinmux Tool 工程 `pinmux.hpmpc` 和同目录附近的
-`board.h`。前者提供 SoC、封装、时钟函数和引脚分配；后者的 `BOARD_APP_*`
-宏用于选出应用实际使用的外设，避免把板级示例中的互斥复用功能同时实例化。
-可在设置 YAML 中通过 `pinmux_functions` 限定要生成的 Pinmux 函数；若省略该项，
-所有已发现且已启用的外设都可以参与生成。
+从 `libxr 5.3.0` 开始，Python 包是 HPM 工程解析、时钟与通信参数计算、配置校验和
+代码生成的唯一业务逻辑来源。`XRobot HPM Peripheral Config` VS Code 插件只负责
+图形界面、工作区监听、启动官方 HPM 工具、调用 `xr_hpm_cfg`，以及展示 CLI 返回的
+诊断和生成结果。插件不应自行计算时钟、CAN 位时序或修改 board/pinmux 文件。
 
-HPM support combines the HPM Pinmux Tool project (`pinmux.hpmpc`) with the nearby
-`board.h`. The pinmux file supplies the SoC, package, clock functions and pin
-assignments; `BOARD_APP_*` macros select the application peripherals so that
-alternative board-demo functions are not instantiated at the same time.
-Set `pinmux_functions` in the settings YAML to restrict generation to selected
-Pinmux functions. If it is omitted, all discovered enabled peripherals remain
-eligible for generation.
-When `board.h` is unavailable, discovered pinmux peripherals are exported with
-`Enabled: false`; enable the intended instances in YAML before code generation.
+Starting with `libxr 5.3.0`, this Python package is the single source of truth for
+HPM project discovery, clock and communication calculations, validation, and code
+generation. The `XRobot HPM Peripheral Config` VS Code extension owns only the UI,
+workspace integration, official HPM tool launchers, CLI invocation, and result
+display. It does not independently calculate clocks or CAN timing, or modify
+board/pinmux files.
+
+完整的 `xr_hpm_cfg` 工作流需要 HPM Pinmux Tool 工程 `pinmux.hpmpc`，以及匹配的
+`board.c/h` 和 `pinmux.c/h`。`hpm_peripherals.yaml` 保存用户选择的 pinmux functions、
+外设行为、DMA 通道和时钟策略。生成器会保留 marker block 之外的 C 用户代码，以及
+`User/libxr_config.yaml` 中不属于 HPM 生成器管理的节点。
+
+The complete `xr_hpm_cfg` workflow requires `pinmux.hpmpc` plus matching
+`board.c/h` and `pinmux.c/h` files. `hpm_peripherals.yaml` stores the selected
+pinmux functions, peripheral behavior, DMA channels, and clock policy. Generation
+preserves C user code outside managed marker blocks and unmanaged nodes in
+`User/libxr_config.yaml`.
+
+### Versioned headless CLI
+
+三个子命令默认输出适合终端阅读的文本；集成程序应传入 `--format json`，并只根据
+稳定字段判断结果。所有 JSON envelope 都包含 `protocol_version`、
+`generator_version`、`errors` 和 `warnings`。协议版本不兼容时，调用方必须停止生成；
+不得通过解析自然语言 `message` 判断错误类型。
+
+The three subcommands produce human-readable text by default. Integrations should
+pass `--format json` and consume only stable fields. Every JSON envelope includes
+`protocol_version`, `generator_version`, `errors`, and `warnings`. Callers must
+stop on an incompatible protocol version and must not infer diagnostic types from
+the human-readable `message`.
+
+#### Inspect
 
 ```bash
-# 解析为 LibXR 通用 YAML / Parse to the common LibXR YAML schema
+xr_hpm_cfg inspect \
+  -d /path/to/hpm-project \
+  -i boards/hpm5361evklite/pinmux.hpmpc \
+  --format json
+```
+
+`inspect` 是只读操作，返回 board、SoC、package、SDK、pinmux functions、外设、
+可用时钟源和后端 capabilities。
+
+`inspect` is read-only and returns board, SoC, package, SDK, pinmux functions,
+peripherals, clock sources, and backend capabilities.
+
+#### Validate
+
+```bash
+xr_hpm_cfg validate \
+  -d /path/to/hpm-project \
+  -i boards/hpm5361evklite/pinmux.hpmpc \
+  --peripheral-config hpm_peripherals.yaml \
+  --format json
+```
+
+`validate` 返回规范化后的配置和结构化诊断。传入 `--config-stdin` 可从 stdin 校验
+尚未保存的 YAML/JSON；只有显式传入 `--write` 才会写回规范化配置。
+
+`validate` returns normalized configuration and structured diagnostics. Use
+`--config-stdin` to validate unsaved YAML/JSON from stdin. The normalized config is
+written only when `--write` is explicitly provided.
+
+#### Generate
+
+```bash
+xr_hpm_cfg generate \
+  -d /path/to/hpm-project \
+  -i boards/hpm5361evklite/pinmux.hpmpc \
+  --peripheral-config hpm_peripherals.yaml \
+  --libxr-config User/libxr_config.yaml \
+  --config-output .config.yaml \
+  -o User/app_main.cpp \
+  --hw-cntr \
+  --format json
+```
+
+`generate` 会先完成发现、规范化、校验和所有文件渲染，再更新以下受管输出：
+
+- `User/libxr_config.yaml`
+- `User/app_main.cpp` 和 `User/app_main.h`
+- `.config.yaml`
+- `board.c/h`
+- `pinmux.c/h`
+
+成功响应中的 `generated_files` 是相对于工程根目录的 POSIX 路径。错误和警告包含
+稳定的 `code`、`level`、`peripheral`、`field` 和 `message` 字段。
+
+`generate` performs discovery, normalization, validation, and complete rendering
+before updating the managed outputs listed above. `generated_files` contains POSIX
+paths relative to the project root. Diagnostics expose stable `code`, `level`,
+`peripheral`, `field`, and `message` fields.
+
+### Legacy HPM commands
+
+原有两阶段命令仍可用于脚本兼容：
+
+```bash
+# Parse to the legacy common LibXR YAML schema
 xr_parse_hpmpc -d /path/to/hpm-project -o .config.yaml
 
-# 生成 HPM LibXR 对象和可选 HardwareContainer / Generate HPM LibXR code
+# Generate from the parsed YAML
 xr_gen_code_hpm -i .config.yaml -o User/app_main.cpp --hw-cntr
 
-# 一步完成解析和生成 / Run both steps
+# Legacy one-shot invocation; new integrations should use the subcommands above
 xr_hpm_cfg -d /path/to/hpm-project --hw-cntr
 ```
 
-通用命令 `xr_parse` 和 `xr_gen_code` 也会自动识别 HPM 工程。当前生成器覆盖
-GPIO、UART、I2C、SPI、经典 CAN/MCAN、CAN FD/MCAN、PWM 和 HPM timebase。对于
-尚无 LibXR HPM 后端的 ADC、USB 等外设，解析结果会保留在 YAML 中并明确提示
-跳过，不会生成无法编译的代码。
-
-The generic `xr_parse` and `xr_gen_code` commands also auto-detect HPM projects.
 The current generator covers GPIO, UART, I2C, SPI, classic CAN/MCAN,
 CAN FD/MCAN, PWM and the HPM timebase. Peripherals without a LibXR HPM backend,
 such as ADC and USB, remain in YAML and are reported as skipped instead of
 producing uncompilable code.
-
-仅凭 pinmux 无法区分 MCAN 使用经典 CAN 还是 CAN FD。`APP_NAME` 包含 `canfd`
-时解析器选择 CAN FD，否则默认经典 CAN；可修改
-`Peripherals.MCAN.<instance>.Kind` 覆盖。总线速率、缓冲区大小和别名等运行参数
-会写入 `libxr_config.yaml`，之后可通过 `--libxr-config` 再次传入。
 
 ## STM32 工程工具 (STM32 Project Tools)
 

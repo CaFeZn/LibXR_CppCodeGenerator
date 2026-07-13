@@ -14,10 +14,8 @@ class LibXRPackageInfo:
 
     @classmethod
     def get_local_version(cls):
-        try:
-            from importlib.metadata import version, PackageNotFoundError
-        except ImportError:
-            from importlib_metadata import version, PackageNotFoundError
+        from importlib.metadata import PackageNotFoundError, version
+
         try:
             return version(cls.PKGNAME)
         except PackageNotFoundError:
