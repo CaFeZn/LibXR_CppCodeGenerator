@@ -131,6 +131,14 @@ def _validate_error(error: Exception) -> dict:
     return validate_envelope(False, {}, errors=(diagnostic,))
 
 
+def _internal_error(error: Exception) -> Diagnostic:
+    return Diagnostic(
+        "HPM_INTERNAL_ERROR",
+        ERROR,
+        "Internal HPM backend error ({}).".format(type(error).__name__),
+    )
+
+
 def _read_stdin_config(stream: TextIO) -> Any:
     value = yaml.safe_load(stream.read())
     if not isinstance(value, dict):
@@ -192,6 +200,17 @@ def run(
             else:
                 error_output.write("HPM project inspection failed: {}\n".format(error))
             return 1
+        except Exception as error:
+            result = inspect_envelope({}, [], [], errors=(_internal_error(error),))
+            if args.format == "json":
+                output.write(dumps_json(result) + "\n")
+            else:
+                error_output.write(
+                    "HPM project inspection failed: {}\n".format(
+                        result["errors"][0]["message"]
+                    )
+                )
+            return 1
         if args.format == "json":
             output.write(dumps_json(result) + "\n")
         else:
@@ -210,6 +229,8 @@ def run(
             )
         except (OSError, ValueError, yaml.YAMLError) as error:
             result = _validate_error(error)
+        except Exception as error:
+            result = validate_envelope(False, {}, errors=(_internal_error(error),))
         if args.format == "json":
             output.write(dumps_json(result) + "\n")
         else:
@@ -237,12 +258,7 @@ def run(
             )
             result = generate_envelope(False, [], errors=(diagnostic,))
         except Exception as error:
-            diagnostic = Diagnostic(
-                "HPM_INTERNAL_ERROR",
-                ERROR,
-                "Internal HPM generator error ({}).".format(type(error).__name__),
-            )
-            result = generate_envelope(False, [], errors=(diagnostic,))
+            result = generate_envelope(False, [], errors=(_internal_error(error),))
         if args.format == "json":
             output.write(dumps_json(result) + "\n")
         else:

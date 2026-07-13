@@ -89,6 +89,19 @@ class HPMValidateCliContractTest(unittest.TestCase):
         self.assertNotIn(CLIENT_KEY, serialized)
         self.assertNotIn(SECRET_KEY, serialized)
 
+    def test_validate_unexpected_failure_keeps_the_json_contract(self):
+        with mock.patch(
+            "libxr.platforms.hpm.cli.validate",
+            side_effect=RuntimeError("sensitive implementation detail"),
+        ):
+            exit_code, stdout, stderr = self.validate()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["errors"][0]["code"], "HPM_INTERNAL_ERROR")
+        self.assertNotIn("sensitive implementation detail", stdout)
+
     def test_validate_file_returns_normalized_json_without_writing(self):
         before = snapshot_files(self.project["root"])
 

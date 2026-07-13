@@ -88,8 +88,21 @@ class HPMInspectCliContractTest(unittest.TestCase):
         self.assertNotIn("unrecognized arguments", stderr.lower())
         self.assertFalse((self.project["root"] / ".config.yaml").exists())
         self.assertFalse((self.project["root"] / "User").exists())
-        if stdout.strip():
-            json.loads(stdout)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["errors"][0]["code"], "HPM_PROJECT_INSPECTION_FAILED")
+
+    def test_inspect_unexpected_failure_keeps_the_json_contract(self):
+        with mock.patch(
+            "libxr.platforms.hpm.cli.inspect",
+            side_effect=RuntimeError("sensitive implementation detail"),
+        ):
+            exit_code, stdout, stderr = self.inspect()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["errors"][0]["code"], "HPM_INTERNAL_ERROR")
+        self.assertNotIn("sensitive implementation detail", stdout)
 
     def test_inspect_selects_first_boards_hpmpc_deterministically(self):
         write_hpmpc(
