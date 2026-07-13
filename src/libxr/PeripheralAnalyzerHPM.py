@@ -92,6 +92,7 @@ def _collect_pinmux(functions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     peripherals = defaultdict(lambda: {"Pins": {}, "PinmuxFunctions": []})
     for function_name, function in functions.items():
         selected = function.get("selectPins", {}) if isinstance(function, dict) else {}
+        annotation = function.get("annotation", "") if isinstance(function, dict) else ""
         for pad, pin_data in selected.items():
             signal = pin_data.get("signal", "") if isinstance(pin_data, dict) else ""
             instance = signal.split(".", 1)[0]
@@ -101,6 +102,10 @@ def _collect_pinmux(functions: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             entry["Pins"][_signal_role(signal)] = pad
             if function_name not in entry["PinmuxFunctions"]:
                 entry["PinmuxFunctions"].append(function_name)
+            if annotation:
+                entry.setdefault("Annotations", [])
+                if annotation not in entry["Annotations"]:
+                    entry["Annotations"].append(annotation)
     return dict(peripherals)
 
 
@@ -146,6 +151,56 @@ def _add_app_peripherals(
         if instance.startswith("SPI") and "BOARD_SPI_CS_GPIO_CTRL" in defines:
             config["UseGpioCs"] = True
         output.setdefault(output_type, {})[instance] = config
+
+
+def _instance_index(instance: str) -> int:
+    match = re.search(r"(\d+)$", instance)
+    return int(match.group(1)) if match else 0
+
+
+def _mcan_kind(instance_config: Dict[str, Any], app_name: str) -> str:
+    hints = [app_name]
+    hints.extend(str(value) for value in instance_config.get("PinmuxFunctions", []))
+    hints.extend(str(value) for value in instance_config.get("Annotations", []))
+    text = " ".join(hints).lower()
+    return "FDCAN" if any(marker in text for marker in ("canfd", "fdcan", "can fd")) else "CAN"
+
+
+def _add_discovered_mcan(
+    output: Dict[str, Dict[str, Any]], discovered: Dict[str, Dict[str, Any]], app_name: str
+) -> None:
+    for instance, discovered_config in discovered.items():
+        if not instance.startswith("MCAN"):
+            continue
+        mcan_group = output.setdefault("MCAN", {})
+        if instance in mcan_group:
+            continue
+        index = _instance_index(instance)
+        config = dict(discovered_config)
+        config["Base"] = "HPM_{}".format(instance)
+        config["Clock"] = "clock_can{}".format(index)
+        config["IRQ"] = "IRQn_{}".format(instance)
+        config["Kind"] = _mcan_kind(config, app_name)
+        mcan_group[instance] = config
+
+
+def _add_discovered_communication(
+    output: Dict[str, Dict[str, Any]], discovered: Dict[str, Dict[str, Any]]
+) -> None:
+    for instance, discovered_config in discovered.items():
+        match = _INSTANCE_RE.match(instance)
+        if not match or match.group(1) not in {"UART", "I2C", "SPI"}:
+            continue
+        peripheral_type = match.group(1)
+        group = output.setdefault(peripheral_type, {})
+        if instance in group:
+            continue
+        config = dict(discovered_config)
+        config["Base"] = "HPM_{}".format(instance)
+        config["Clock"] = "clock_{}".format(instance.lower())
+        if peripheral_type == "UART":
+            config["IRQ"] = "IRQn_{}".format(instance)
+        group[instance] = config
 
 
 def _add_gpio(
@@ -225,10 +280,14 @@ def parse_hpmpc_file(
         cmake_path = _find_project_cmake(hpmpc_path)
     defines = _read_defines(board_header)
     discovered = _collect_pinmux(functions)
+    app_name = _parse_app_name(cmake_path)
 
     peripherals: Dict[str, Dict[str, Any]] = {}
-    _add_app_peripherals(peripherals, defines, discovered, _parse_app_name(cmake_path))
-    if not defines:
+    _add_app_peripherals(peripherals, defines, discovered, app_name)
+    if defines:
+        _add_discovered_mcan(peripherals, discovered, app_name)
+        _add_discovered_communication(peripherals, discovered)
+    else:
         for instance, config in discovered.items():
             peripheral_type = _INSTANCE_RE.match(instance).group(1)
             inactive_config = dict(config)

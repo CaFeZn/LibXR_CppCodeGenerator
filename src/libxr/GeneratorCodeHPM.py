@@ -16,8 +16,11 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 DEFAULT_SETTINGS = {
     "SYSTEM": "None",
+    "pinmux_functions": [],
+    "disabled_peripherals": [],
     "SPI": {},
     "I2C": {},
+    "UART": {},
     "CAN": {},
     "FDCAN": {},
     "PWM": {},
@@ -84,13 +87,82 @@ def _aliases(name: str, settings: Dict[str, Any]) -> List[str]:
     return result or [name]
 
 
+def _selected_pinmux_functions(settings: Dict[str, Any]) -> List[str]:
+    configured = settings.get("pinmux_functions", [])
+    if not configured and isinstance(settings.get("HPM"), dict):
+        configured = settings["HPM"].get("pinmux_functions", [])
+    if isinstance(configured, str):
+        configured = [configured]
+    if not isinstance(configured, list):
+        return []
+    return [str(name) for name in configured if str(name)]
+
+
+def _matches_selected_functions(instance: str, config: Dict[str, Any], selected: set) -> bool:
+    functions = config.get("PinmuxFunctions", [])
+    if isinstance(functions, str):
+        functions = [functions]
+    if not isinstance(functions, list):
+        return False
+    if any(str(function) in selected for function in functions):
+        return True
+    return "init_{}_pins".format(_identifier(instance)) in selected
+
+
+def _filter_project_by_pinmux_functions(
+    project: Dict[str, Any], settings: Dict[str, Any]
+) -> Dict[str, Any]:
+    selected_functions = _selected_pinmux_functions(settings)
+    configured_disabled = settings.get("disabled_peripherals", [])
+    if isinstance(configured_disabled, str):
+        configured_disabled = [configured_disabled]
+    disabled = {
+        str(instance).lower()
+        for instance in configured_disabled
+        if str(instance)
+    } if isinstance(configured_disabled, list) else set()
+    if not selected_functions and not disabled:
+        return project
+    selected = set(selected_functions)
+    filtered = copy.deepcopy(project)
+    peripherals = filtered.get("Peripherals", {})
+    for group_name, group in list(peripherals.items()):
+        if not isinstance(group, dict):
+            continue
+        kept = {
+            instance: config
+            for instance, config in group.items()
+            if isinstance(config, dict)
+            and str(instance).lower() not in disabled
+            and (not selected or _matches_selected_functions(instance, config, selected))
+        }
+        if kept:
+            peripherals[group_name] = kept
+        else:
+            peripherals.pop(group_name, None)
+    filtered["GPIO"] = {
+        name: config
+        for name, config in filtered.get("GPIO", {}).items()
+        if isinstance(config, dict)
+        and (not selected or _matches_selected_functions(name, config, selected))
+    }
+    return filtered
+
+
 def _preserve_user_block(existing: str, number: int) -> str:
     pattern = re.compile(
         r"/\* User Code Begin {} \*/(.*?)/\* User Code End {} \*/".format(number, number),
         re.DOTALL,
     )
     match = pattern.search(existing)
-    return match.group(1).strip("\n") if match else ""
+    if not match:
+        return ""
+    lines = match.group(1).strip("\r\n").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _gpio_direction(value: str) -> str:
@@ -104,6 +176,64 @@ def _gpio_direction(value: str) -> str:
     }
     normalized = str(value or "INPUT").upper()
     return normalized if normalized in supported else "INPUT"
+
+
+def _spi_clock_polarity(value: Any) -> str:
+    normalized = str(value or "LOW").upper()
+    return normalized if normalized in {"LOW", "HIGH"} else "LOW"
+
+
+def _spi_clock_phase(value: Any) -> str:
+    normalized = str(value or "EDGE_1").upper()
+    if normalized in {"EDGE1", "FIRST", "FIRST_EDGE"}:
+        normalized = "EDGE_1"
+    elif normalized in {"EDGE2", "SECOND", "SECOND_EDGE"}:
+        normalized = "EDGE_2"
+    return normalized if normalized in {"EDGE_1", "EDGE_2"} else "EDGE_1"
+
+
+def _spi_mode_to_config(value: Any) -> Tuple[str, str]:
+    try:
+        mode = int(value)
+    except (TypeError, ValueError):
+        mode = 0
+    if mode < 0 or mode > 3:
+        mode = 0
+    polarity = "HIGH" if mode >= 2 else "LOW"
+    phase = "EDGE_2" if mode % 2 else "EDGE_1"
+    return polarity, phase
+
+
+def _spi_prescaler(value: Any) -> str:
+    normalized = str(value or "DIV_4").upper()
+    if normalized.isdigit():
+        normalized = "DIV_{}".format(normalized)
+    supported = {
+        "DIV_1",
+        "DIV_2",
+        "DIV_4",
+        "DIV_8",
+        "DIV_16",
+        "DIV_32",
+        "DIV_64",
+        "DIV_128",
+        "DIV_256",
+    }
+    return normalized if normalized in supported else "DIV_4"
+
+
+def _spi_prescaler_from_hz(clock_hz: Any, target_hz: Any) -> str:
+    try:
+        source = int(clock_hz)
+        target = int(target_hz)
+    except (TypeError, ValueError):
+        return "DIV_4"
+    if source <= 0 or target <= 0:
+        return "DIV_4"
+    for divider in (1, 2, 4, 8, 16, 32, 64, 128, 256):
+        if source // divider <= target:
+            return "DIV_{}".format(divider)
+    return "DIV_256"
 
 
 def _generate_gpio(
@@ -144,6 +274,58 @@ def _generate_peripherals(
     devices = []
     unsupported = []
 
+    uart_index = 0
+    for instance, config in peripherals.get("UART", {}).items():
+        if config.get("Enabled") is False:
+            continue
+        variable = _identifier(instance)
+        cfg = settings["UART"].setdefault(variable, {})
+        baudrate = int(cfg.setdefault("baudrate", 115200))
+        rx_buffer_size = int(cfg.setdefault("rx_buffer_size", 256))
+        tx_buffer_size = int(cfg.setdefault("tx_buffer_size", 256))
+        tx_queue_size = int(cfg.setdefault("tx_queue_size", 5))
+        parity = str(cfg.setdefault("parity", "NO_PARITY")).upper()
+        if parity not in {"NO_PARITY", "EVEN", "ODD"}:
+            parity = "NO_PARITY"
+        data_bits = int(cfg.setdefault("data_bits", 8))
+        stop_bits = int(cfg.setdefault("stop_bits", 1))
+        rx_dma_channel = uart_index * 2
+        tx_dma_channel = rx_dma_channel + 1
+        uart_index += 1
+        resources.extend(
+            [
+                "ATTR_PLACE_AT_NONCACHEABLE static uint8_t {}_rx_dma_buffer[{}];".format(
+                    variable, rx_buffer_size
+                ),
+                "ATTR_PLACE_AT_NONCACHEABLE static uint8_t {}_tx_dma_buffer[{}];".format(
+                    variable, tx_buffer_size * 2
+                ),
+            ]
+        )
+        code.extend(
+            [
+                "  static LibXR::HPMUART {}(".format(variable),
+                "      {}, {}, {},".format(
+                    config.get("Base", "HPM_" + instance),
+                    config.get("Clock", "clock_" + variable),
+                    config.get("IRQ", "IRQn_" + instance),
+                ),
+                "      LibXR::RawData({0}_rx_dma_buffer, sizeof({0}_rx_dma_buffer)),".format(
+                    variable
+                ),
+                "      LibXR::RawData({0}_tx_dma_buffer, sizeof({0}_tx_dma_buffer)),".format(
+                    variable
+                ),
+                "      {}, {}, {},".format(
+                    rx_dma_channel, tx_dma_channel, tx_queue_size
+                ),
+                "      {{{}U, LibXR::UART::Parity::{}, {}U, {}U}});".format(
+                    baudrate, parity, data_bits, stop_bits
+                ),
+            ]
+        )
+        devices.append((variable, "UART", _aliases(variable, settings)))
+
     for instance, config in peripherals.get("I2C", {}).items():
         if config.get("Enabled") is False:
             continue
@@ -156,6 +338,13 @@ def _generate_peripherals(
                 config.get("Clock", "clock_" + variable), bus_hz
             )
         )
+        address_mode = str(cfg.setdefault("address_mode", "7bit")).lower()
+        if address_mode == "10bit":
+            code.append(
+                "  ASSERT({}.SetAddressMode(LibXR::HPMI2C::AddressMode::ADDR_10BIT) == LibXR::ErrorCode::OK);".format(
+                    variable
+                )
+            )
         devices.append((variable, "I2C", _aliases(variable, settings)))
 
     for instance, config in peripherals.get("SPI", {}).items():
@@ -171,13 +360,35 @@ def _generate_peripherals(
             ]
         )
         auto_board_init = "true"
-        if config.get("UseGpioCs"):
+        use_gpio_cs = bool(cfg.get("use_gpio_cs", config.get("UseGpioCs", False)))
+        if use_gpio_cs:
             code.append(
                 "  board_init_spi_pins_with_gpio_as_cs({});".format(
                     config.get("Base", "HPM_" + instance)
                 )
             )
             auto_board_init = "false"
+        mode_polarity, mode_phase = _spi_mode_to_config(cfg.get("spi_mode", 0))
+        clock_polarity = _spi_clock_polarity(cfg.get("clock_polarity", mode_polarity))
+        clock_phase = _spi_clock_phase(cfg.get("clock_phase", mode_phase))
+        if "prescaler" in cfg:
+            prescaler = _spi_prescaler(cfg.get("prescaler"))
+        else:
+            prescaler = _spi_prescaler_from_hz(
+                cfg.get("peripheral_clock_hz"), cfg.get("sclk_hz")
+            )
+        double_buffer = "true" if cfg.get("double_buffer", False) else "false"
+        configuration = "      {{LibXR::SPI::ClockPolarity::{}, LibXR::SPI::ClockPhase::{}, LibXR::SPI::Prescaler::{}, {}}}".format(
+            clock_polarity,
+            clock_phase,
+            prescaler,
+            double_buffer,
+        )
+        if use_gpio_cs:
+            configuration += (
+                ",\n      +[](bool selected) { board_write_spi_cs(BOARD_SPI_CS_PIN, "
+                "selected ? BOARD_SPI_CS_ACTIVE_LEVEL : !BOARD_SPI_CS_ACTIVE_LEVEL); }"
+            )
         code.extend(
             [
                 "  static LibXR::HPMSPI {}(".format(variable),
@@ -186,9 +397,10 @@ def _generate_peripherals(
                     config.get("Clock", "clock_" + variable),
                 ),
                 "      LibXR::RawData({0}_rx_buffer, sizeof({0}_rx_buffer)),".format(variable),
-                "      LibXR::RawData({0}_tx_buffer, sizeof({0}_tx_buffer)), {1});".format(
+                "      LibXR::RawData({0}_tx_buffer, sizeof({0}_tx_buffer)), {1},".format(
                     variable, auto_board_init
                 ),
+                configuration + ");",
             ]
         )
         devices.append((variable, "SPI", _aliases(variable, settings)))
@@ -197,11 +409,20 @@ def _generate_peripherals(
         if config.get("Enabled") is False:
             continue
         variable = _identifier(instance)
-        kind = str(config.get("Kind", "CAN")).upper()
+        if variable in settings.get("CAN", {}):
+            kind = "CAN"
+        elif variable in settings.get("FDCAN", {}):
+            kind = "FDCAN"
+        else:
+            kind = str(config.get("Kind", "CAN")).upper()
         setting_key = "FDCAN" if kind == "FDCAN" else "CAN"
         cfg = settings[setting_key].setdefault(variable, {})
-        queue_size = int(cfg.setdefault("queue_size", 8))
-        index = int(cfg.setdefault("index", _int_suffix(instance)))
+        if kind == "FDCAN":
+            queue_size = int(cfg.setdefault("queue_size", 8))
+            index = int(cfg.setdefault("index", _int_suffix(instance)))
+        else:
+            queue_size = int(cfg.get("queue_size", 8))
+            index = int(cfg.get("index", _int_suffix(instance)))
         class_name = "HPMCANFD" if kind == "FDCAN" else "HPMCAN"
         interface = "FDCAN" if kind == "FDCAN" else "CAN"
         base = config.get("Base", "HPM_" + instance)
@@ -224,29 +445,39 @@ def _generate_peripherals(
         )
         config_type = "FDCAN" if kind == "FDCAN" else "CAN"
         bitrate = int(cfg.setdefault("bitrate", 500000))
-        sample_point = float(cfg.setdefault("sample_point", 0.875))
         code.extend(
             [
                 "  LibXR::{}::Configuration {}_config{{}};".format(config_type, variable),
                 "  {0}_config.bitrate = {1}U;".format(variable, bitrate),
-                "  {0}_config.sample_point = {1}f;".format(variable, sample_point),
             ]
         )
         if kind == "FDCAN":
+            sample_point = float(cfg.setdefault("sample_point", 0.875))
             data_bitrate = int(cfg.setdefault("data_bitrate", 2000000))
             data_sample_point = float(cfg.setdefault("data_sample_point", 0.75))
             brs = "true" if cfg.setdefault("brs", True) else "false"
+            esi = "true" if cfg.setdefault("esi", False) else "false"
             code.extend(
                 [
+                    "  {0}_config.sample_point = {1}f;".format(variable, sample_point),
                     "  {0}_config.data_bitrate = {1}U;".format(variable, data_bitrate),
                     "  {0}_config.data_sample_point = {1}f;".format(
                         variable, data_sample_point
                     ),
                     "  {0}_config.fd_mode.fd_enabled = true;".format(variable),
                     "  {0}_config.fd_mode.brs = {1};".format(variable, brs),
+                    "  {0}_config.fd_mode.esi = {1};".format(variable, esi),
                 ]
             )
-        code.append("  {}.SetConfig({}_config);".format(variable, variable))
+        elif "sample_point" in cfg:
+            sample_point = float(cfg["sample_point"])
+            code.append("  {0}_config.sample_point = {1}f;".format(variable, sample_point))
+        for field in ("loopback", "listen_only", "one_shot"):
+            if cfg.get(field, False):
+                code.append("  {0}_config.mode.{1} = true;".format(variable, field))
+        code.append(
+            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(variable)
+        )
         devices.append((variable, interface, _aliases(variable, settings)))
 
     for instance, config in peripherals.get("CAN", {}).items():
@@ -254,8 +485,8 @@ def _generate_peripherals(
             continue
         variable = _identifier(instance)
         cfg = settings["CAN"].setdefault(variable, {})
-        queue_size = int(cfg.setdefault("queue_size", 8))
-        index = int(cfg.setdefault("index", _int_suffix(instance)))
+        queue_size = int(cfg.get("queue_size", 8))
+        index = int(cfg.get("index", _int_suffix(instance)))
         base = config.get("Base", "HPM_" + instance)
         code.extend(
             [
@@ -274,14 +505,20 @@ def _generate_peripherals(
             )
         )
         bitrate = int(cfg.setdefault("bitrate", 500000))
-        sample_point = float(cfg.setdefault("sample_point", 0.875))
         code.extend(
             [
                 "  LibXR::CAN::Configuration {}_config{{}};".format(variable),
                 "  {0}_config.bitrate = {1}U;".format(variable, bitrate),
-                "  {0}_config.sample_point = {1}f;".format(variable, sample_point),
-                "  {0}.SetConfig({0}_config);".format(variable),
             ]
+        )
+        if "sample_point" in cfg:
+            sample_point = float(cfg["sample_point"])
+            code.append("  {0}_config.sample_point = {1}f;".format(variable, sample_point))
+        for field in ("loopback", "listen_only", "one_shot"):
+            if cfg.get(field, False):
+                code.append("  {0}_config.mode.{1} = true;".format(variable, field))
+        code.append(
+            "  ASSERT({0}.SetConfig({0}_config) == LibXR::ErrorCode::OK);".format(variable)
         )
         devices.append((variable, "CAN", _aliases(variable, settings)))
 
@@ -308,7 +545,7 @@ def _generate_peripherals(
         )
         devices.append((variable, "PWM", _aliases(variable, settings)))
 
-    supported = {"I2C", "SPI", "MCAN", "CAN", "PWM"}
+    supported = {"UART", "I2C", "SPI", "MCAN", "CAN", "PWM"}
     for peripheral_type, instances in peripherals.items():
         active = any(config.get("Enabled") is not False for config in instances.values())
         if peripheral_type not in supported and active:
@@ -342,6 +579,7 @@ def generate_code(
     use_hw_cntr: bool = False,
     existing: str = "",
 ) -> str:
+    project = _filter_project_by_pinmux_functions(project, settings)
     use_hw_cntr = use_hw_cntr or use_xrobot
     resources, peripheral_code, devices = _generate_peripherals(
         project.get("Peripherals", {}), settings
@@ -352,14 +590,32 @@ def generate_code(
     headers = [
         '#include "app_main.h"',
         '#include "board.h"',
-        '#include "hpm_gpio.hpp"',
-        '#include "hpm_i2c.hpp"',
-        '#include "hpm_spi.hpp"',
-        '#include "hpm_pwm.hpp"',
         '#include "hpm_timebase.hpp"',
         '#include "libxr.hpp"',
     ]
     peripheral_groups = project.get("Peripherals", {})
+    if any(
+        config.get("Enabled") is not False
+        for config in peripheral_groups.get("UART", {}).values()
+    ):
+        headers.append('#include "hpm_uart.hpp"')
+    if gpio_code:
+        headers.append('#include "hpm_gpio.hpp"')
+    if any(
+        config.get("Enabled") is not False
+        for config in peripheral_groups.get("I2C", {}).values()
+    ):
+        headers.append('#include "hpm_i2c.hpp"')
+    if any(
+        config.get("Enabled") is not False
+        for config in peripheral_groups.get("SPI", {}).values()
+    ):
+        headers.append('#include "hpm_spi.hpp"')
+    if any(
+        config.get("Enabled") is not False
+        for config in peripheral_groups.get("PWM", {}).values()
+    ):
+        headers.append('#include "hpm_pwm.hpp"')
     if any(
         config.get("Enabled") is not False
         for config in peripheral_groups.get("CAN", {}).values()
