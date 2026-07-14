@@ -3,7 +3,7 @@
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 _INSTANCE_RE = re.compile(r"^(UART|I2C|SPI|MCAN|CAN|ADC|USB|GPTMR|PWM)(\d+)$")
 _SIGNAL_INDEX_RE = re.compile(r"\[(\d+)\]")
@@ -50,6 +50,10 @@ class HpmpcData:
     pinmux_functions: List[str]
     peripherals: List[PinmuxPeripheral]
     clock_functions: List[str]
+    function_annotations: Dict[str, List[str]] = field(default_factory=dict)
+    pin_annotations: Dict[str, Dict[Tuple[str, str, str], List[str]]] = field(
+        default_factory=dict
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -74,6 +78,11 @@ def _metadata_text(value: Any, default: str) -> str:
 def _signal_role(signal: str) -> str:
     role = signal.rsplit(".", 1)[-1]
     return _SIGNAL_INDEX_RE.sub(r"\1", role)
+
+
+def _append_unique(values: List[str], value: str) -> None:
+    if value and value not in values:
+        values.append(value)
 
 
 def parse_hpmpc(path: str) -> HpmpcData:
@@ -108,11 +117,18 @@ def parse_hpmpc(path: str) -> HpmpcData:
     clock_functions = _object(clock.get("functions"))
 
     by_instance: Dict[str, PinmuxPeripheral] = {}
+    function_annotations: Dict[str, List[str]] = {}
+    pin_annotations: Dict[str, Dict[Tuple[str, str, str], List[str]]] = {}
     for function_name, function_value in functions.items():
+        function_name = str(function_name)
         function = _object(function_value)
         selected_pins = _object(function.get("selectPins"))
         annotation_value = function.get("annotation")
         annotation = annotation_value if isinstance(annotation_value, str) else ""
+        if annotation:
+            _append_unique(
+                function_annotations.setdefault(function_name, []), annotation
+            )
 
         for pad, pin_value in selected_pins.items():
             pin = _object(pin_value)
@@ -136,18 +152,23 @@ def parse_hpmpc(path: str) -> HpmpcData:
                 by_instance[instance] = peripheral
 
             role = _signal_role(signal)
-            peripheral.pins[role] = str(pad)
-            peripheral.function_pins.setdefault(str(function_name), {})[role] = str(pad)
+            pad_name = str(pad)
+            peripheral.pins[role] = pad_name
+            peripheral.function_pins.setdefault(function_name, {})[role] = pad_name
             if function_name not in peripheral.functions:
                 peripheral.functions.append(function_name)
-            if annotation and annotation not in peripheral.annotations:
-                peripheral.annotations.append(annotation)
+            _append_unique(peripheral.annotations, annotation)
             pin_annotation_value = pin.get("annotation")
             pin_annotation = (
                 pin_annotation_value if isinstance(pin_annotation_value, str) else ""
             )
-            if pin_annotation and pin_annotation not in peripheral.annotations:
-                peripheral.annotations.append(pin_annotation)
+            _append_unique(peripheral.annotations, pin_annotation)
+            if pin_annotation:
+                key = (instance, role, pad_name)
+                _append_unique(
+                    pin_annotations.setdefault(function_name, {}).setdefault(key, []),
+                    pin_annotation,
+                )
 
     peripherals = sorted(
         by_instance.values(), key=lambda peripheral: peripheral.instance
@@ -160,4 +181,6 @@ def parse_hpmpc(path: str) -> HpmpcData:
         pinmux_functions=list(functions.keys()),
         peripherals=peripherals,
         clock_functions=list(clock_functions.keys()),
+        function_annotations=function_annotations,
+        pin_annotations=pin_annotations,
     )

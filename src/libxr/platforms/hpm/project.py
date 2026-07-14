@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from .hpmpc import HpmpcData, PinmuxPeripheral, parse_hpmpc
+from .pinmux_c import reconcile_pinmux_data
 
 _SKIP_DIRECTORIES = {
     ".git",
@@ -212,9 +213,12 @@ def discover_project(root: str, configured_hpmpc_path: str = "") -> HpmProject:
         )
     hpmpc_path = _find_hpmpc(project_root, configured_hpmpc_path)
     board_dir = _find_board_directory(project_root, hpmpc_path)
-    return _project_from_data(
-        project_root, hpmpc_path, board_dir, parse_hpmpc(hpmpc_path)
+    data = reconcile_pinmux_data(
+        parse_hpmpc(hpmpc_path),
+        _read_text(os.path.join(board_dir, "pinmux.c")),
+        _read_text(os.path.join(board_dir, "board.h")),
     )
+    return _project_from_data(project_root, hpmpc_path, board_dir, data)
 
 
 def inspect_project(root: str, configured_hpmpc_path: str = "") -> Dict[str, Any]:

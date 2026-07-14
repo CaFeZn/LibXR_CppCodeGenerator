@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 import yaml
 
 from libxr.platforms.hpm.hpmpc import parse_hpmpc
+from libxr.platforms.hpm.pinmux_c import reconcile_pinmux_data
 from libxr.platforms.hpm.project import find_hpmpc_files as discover_hpmpc_files
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -35,6 +36,13 @@ def _read_defines(path: Optional[str]) -> Dict[str, str]:
             if match:
                 defines[match.group(1)] = _strip_c_comments(match.group(2))
     return defines
+
+
+def _read_text(path: Optional[str]) -> str:
+    if not path or not os.path.isfile(path):
+        return ""
+    with open(path, "r", encoding="utf-8", errors="replace") as source:
+        return source.read()
 
 
 def _resolve_define(name: str, defines: Dict[str, str]) -> str:
@@ -249,10 +257,13 @@ def parse_hpmpc_file(
     cmake_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Parse one .hpmpc file without copying credential fields into the result."""
-    parsed = parse_hpmpc(hpmpc_path)
-
     if board_header is None:
         board_header = _find_nearby(hpmpc_path, "board.h")
+    parsed = reconcile_pinmux_data(
+        parse_hpmpc(hpmpc_path),
+        _read_text(_find_nearby(hpmpc_path, "pinmux.c")),
+        _read_text(board_header),
+    )
     if cmake_path is None:
         cmake_path = _find_project_cmake(hpmpc_path)
     defines = _read_defines(board_header)
